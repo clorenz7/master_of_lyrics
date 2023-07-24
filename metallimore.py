@@ -14,7 +14,9 @@ CHAR_TOKENIZER_FILE = 'char_tokenizer.joblib'
 # TODO: Use tiktoken to train a SimpleBytePairEncoding on the data corpus
 
 def remove_bracketed_text(text):
-    # Removes comments like [solo] or [Chorus]
+    """
+    Removes comments like [solo] or [Chorus] from song lyrics
+    """
     pattern = r"\s*\[.*?\]\s*"
     cleaned_text = re.sub(pattern, '', text)
     return cleaned_text
@@ -40,7 +42,7 @@ def clean_lyrics(all_lyrics):
     all_lyrics = all_lyrics.replace('Æ', 'Ae')
     all_lyrics = all_lyrics.replace('\n ', '\n')
     all_lyrics = all_lyrics.replace('\n\n', '\n')
-    all_lyrics = all_lyrics.replace('  ', '\n')
+    all_lyrics = all_lyrics.replace('  ', ' ')
     all_lyrics = all_lyrics.replace('(', '')
     all_lyrics = all_lyrics.replace(')', '')
 
@@ -85,6 +87,10 @@ class MetallicaLyricsDataset(Dataset):
                 )
 
     def get_all(self):
+        """
+        Returns the lyrics from all songs in one big string.
+        Useful for creating the tokenizer.
+        """
         return "\n".join(self.all_text)
 
     def __getitem__(self, idx):
@@ -95,13 +101,16 @@ class MetallicaLyricsDataset(Dataset):
 
 
 def create_char_tokenizer(data_dir='Metallica_Lyrics'):
+    # Get all of the Lyrics from the dataset
     dataset = MetallicaLyricsDataset(data_dir)
     all_lyrics = dataset.get_all()
 
+    # This is the essentially the decoder
     all_chars = sorted(list(set(c for c in all_lyrics)))
     # Add an End of Song token
     all_chars += ';'
 
+    # This will be the encoder
     token_map = {c:ii for ii,c in enumerate(all_chars)}
 
     return token_map, all_chars
