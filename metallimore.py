@@ -1,12 +1,15 @@
 import argparse
 import glob
 import os
+import random
 import re
+import shutil
 
 import joblib
 
 from torch import nn
 from torch.utils.data import Dataset
+from torch.optim import AdamW
 
 CHAR_TOKENIZER_FILE = 'char_tokenizer.joblib'
 
@@ -34,6 +37,7 @@ def clean_lyrics(all_lyrics):
     all_lyrics = all_lyrics.replace('“', '"')
     all_lyrics = all_lyrics.replace('”', '"')
     all_lyrics = all_lyrics.replace('…', "...")
+    all_lyrics = all_lyrics.replace('...', "")
     all_lyrics = all_lyrics.replace('—', '-')
     all_lyrics = all_lyrics.replace('–', '-')
     all_lyrics = all_lyrics.replace('/', '-')
@@ -60,6 +64,9 @@ class CharTokenizer(object):
 
     def decode(self, tokens):
         return "".join(self.decode_list[t] for t in tokens)
+
+    def __len__(self):
+        return len(self.decode_list)
 
 
 class MetallicaLyricsDataset(Dataset):
@@ -116,6 +123,42 @@ def create_char_tokenizer(data_dir='Metallica_Lyrics'):
     return token_map, all_chars
 
 
+class TransCORmer(nn.Module):
+
+    def __init__(self, n_tokens, n_embed, n_positions=2048):
+        super().__init__()
+        # Create position and word embeddings
+        self.token_embed = nn.Embedding(n_tokens, n_embed)
+        self.pos_embed = nn.Embedding(n_positions, n_embed)
+
+    def forward(self, x):
+
+        e = self.token_embed(x) + self.pos_embed(x)
+
+        return e
+
+def train(model, dataset, train_params):
+
+    optimizer = AdamW(
+        model.parameters(),
+        lr = 2e-4,
+        weight_decay=1e-5,
+    )
+
+    loss_obj = nn.CrossEntropyLoss()
+
+    for tokens in dataset:
+        optimizer.zero_grad()
+
+        output = model(tokens)
+        loss = loss_obj(output, tokens)
+
+        loss.backward()
+        optimizer.step()
+
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         'Script for creating a Metallica Lyric generator'
@@ -125,18 +168,48 @@ def main():
         help='Directory containing files with .txt lyrics files'
     )
     parser.add_argument('--make_char_tokenizer', action='store_true')
+    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--split', type=str,
+                        help="Split into 80/20 train/test and copy to this directory")
 
     cli_args = parser.parse_args()
     if cli_args.make_char_tokenizer:
         token_map, all_chars = create_char_tokenizer()
         joblib.dump([token_map, all_chars], CHAR_TOKENIZER_FILE)
+    if cli_args.split:
+        train_dir = os.path.join(cli_args.split, "train")
+        test_dir = os.path.join(cli_args.split, "test")
+        os.makedirs(train_dir)
+        os.makedirs(test_dir)
+        file_list = glob.glob(os.path.join(cli_args.data_dir, "*.txt"))
+
+        random.shuffle(file_list)
+        n_test = int(0.2 * len(file_list))
+        for file_name in file_list[:n_test]:
+            new_name = os.path.join(test_dir, os.path.basename(file_name))
+            shutil.copy(file_name, new_name)
+
+        for file_name in file_list[n_test:]:
+            new_name = os.path.join(train_dir, os.path.basename(file_name))
+            shutil.copy(file_name, new_name)
+    else:
+        train_dir = os.path.join(cli_args.data_dir, "train")
+        test_dir = os.path.join(cli_args.data_dir, "test")
 
     tokenizer = CharTokenizer(CHAR_TOKENIZER_FILE)
+    n_positions = 2048
+    n_tokens = len(tokenizer)
+    n_embed = 128
 
-    dataset = MetallicaLyricsDataset(cli_args.data_dir, tokenizer)
+    model = TransCORmer(n_tokens, n_embed=n_embed, n_positions=n_positions)
 
-    print(dataset.all_text[0])
-    print(tokenizer.decode(dataset[0]))
+    # I should probably split in to train and test sets...
+    train_dataset = MetallicaLyricsDataset(train_dir, tokenizer)
+    test_dataset = MetallicaLyricsDataset(test_dir, tokenizer)
+
+    if cli_args.train:
+        train_params = {}
+        train(model, train_dataset, train_params)
 
 
 if __name__ == '__main__':
