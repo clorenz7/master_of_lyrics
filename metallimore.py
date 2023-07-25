@@ -1,12 +1,14 @@
 import argparse
 import glob
+import math
 import os
 import random
 import re
 import shutil
 
 import joblib
-
+import numpy as np
+import torch
 from torch import nn
 from torch.utils.data import Dataset
 from torch.optim import AdamW
@@ -101,7 +103,8 @@ class MetallicaLyricsDataset(Dataset):
         return "\n".join(self.all_text)
 
     def __getitem__(self, idx):
-        return self.all_tokens[idx]
+        item = torch.tensor(self.all_tokens[idx]).unsqueeze_(0)
+        return item
 
     def __len__(self):
         return len(self.all_tokens)
@@ -122,22 +125,97 @@ def create_char_tokenizer(data_dir='Metallica_Lyrics'):
 
     return token_map, all_chars
 
+class AttentionHead(nn.Module):
+
+    def __init__(self, n_embed_in, n_embed_out, max_tokens=2048):
+        super().__init__()
+        self.n_embed = n_embed_in
+
+        self.query_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
+        self.key_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
+        self.value_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
+
+        self.register_buffer('no_look_ahead', torch.triu(torch.full((max_tokens, max_tokens), float('-inf')), diagonal=1))
+
+    def forward(self, x):
+        """
+        expected shape:
+            batch x tokens x embed
+        """
+        Q = self.query_xform(x)
+        K = self.key_xform(x).transpose(-2, -1)
+        V = self.value_xform(x)
+
+        n_tokens = x.shape[1]
+
+        NLA = self.no_look_ahead[:n_tokens, :n_tokens]
+
+        dk = math.sqrt(Q.shape[-1])
+
+        attention = torch.softmax((Q @ K)/dk + NLA, dim=2) @ V
+
+        return attention
+
+
+class MultiHeadAttention(nn.Module):
+
+    def __init__(self, n_embed, n_heads=8, n_inner=512):
+        super().__init__()
+        self.n_heads = n_heads
+        self.n_embed = n_embed
+
+        dim_per_head = n_embed // n_heads
+
+        self.heads = nn.ModuleList(
+            [AttentionHead(n_embed, dim_per_head) for _ in range(n_heads)]
+        )
+
+        self.fc_layer = nn.Sequential(
+            nn.Linear(n_embed, n_inner),
+            nn.ReLU(),
+            nn.Linear(n_inner, n_embed),
+        )
+
+    def forward(self, x):
+        ## Implement and Add Layer Normalization
+
+        attentions = [head(x) for head in self.heads]
+
+        y = torch.concat(attentions, dim=2)
+        y = self.fc_layer(y)
+        # Add residual
+        y = y + x
+
+        return y
+
 
 class TransCORmer(nn.Module):
 
-    def __init__(self, n_tokens, n_embed, n_positions=2048):
+    # TODO: Add dropout
+
+    def __init__(self, n_tokens, n_embed, n_blocks=12, n_positions=2048):
         super().__init__()
         # Create position and word embeddings
         self.token_embed = nn.Embedding(n_tokens, n_embed)
         self.pos_embed = nn.Embedding(n_positions, n_embed)
 
+        self.attention_blocks = nn.Sequential(
+            *[MultiHeadAttention(n_embed) for _ in range(n_blocks)]
+        )
+
+        self.lm_head = nn.Linear(n_embed, n_tokens)
+
     def forward(self, x):
 
         e = self.token_embed(x) + self.pos_embed(x)
+        y = self.attention_blocks(e)
+        y = self.lm_head(y)
+        # I think the loss function will do this.
+        # y = torch.softmax(y, dim=2)
 
-        return e
+        return y
 
-def train(model, dataset, train_params):
+def train(model, dataset, train_params, n_epochs=20, device='cpu'):
 
     optimizer = AdamW(
         model.parameters(),
@@ -145,16 +223,36 @@ def train(model, dataset, train_params):
         weight_decay=1e-5,
     )
 
+    model.to(device)
+
     loss_obj = nn.CrossEntropyLoss()
 
-    for tokens in dataset:
-        optimizer.zero_grad()
+    epoch_losses = []
 
-        output = model(tokens)
-        loss = loss_obj(output, tokens)
+    for e_idx in range(n_epochs):
+        losses = []
+        for song_tokens in dataset:
+            song_tokens = song_tokens.to(device)
+            optimizer.zero_grad()
 
-        loss.backward()
-        optimizer.step()
+            output = model(song_tokens)
+            labels = song_tokens[:, 1:]
+
+            # Don't use the last output since there is no label
+            aligned_output = output[:, :-1, :]
+            # Transpose last channel and seq dimension to work with loss
+            aligned_output = aligned_output.transpose(-2, -1)
+
+            loss = loss_obj(aligned_output, labels)
+            losses.append(loss.item())
+
+            loss.backward()
+            optimizer.step()
+
+        avg_loss = np.mean(losses)
+        epoch_losses.append(avg_loss)
+
+        print(f'Epoch #{e_idx+1} done! Avg Loss: {avg_loss:0.4f}')
 
 
 
@@ -207,9 +305,11 @@ def main():
     train_dataset = MetallicaLyricsDataset(train_dir, tokenizer)
     test_dataset = MetallicaLyricsDataset(test_dir, tokenizer)
 
+    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+
     if cli_args.train:
         train_params = {}
-        train(model, train_dataset, train_params)
+        train(model, train_dataset, train_params, device=device)
 
 
 if __name__ == '__main__':
