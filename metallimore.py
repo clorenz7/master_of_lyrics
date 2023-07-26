@@ -110,30 +110,51 @@ class MetallicaLyricsDataset(Dataset):
         return len(self.all_tokens)
 
 
-def create_char_tokenizer(data_dir='Metallica_Lyrics'):
+def create_char_tokenizer(data_dir='Metallica_Lyrics', pretrain_tokens={}):
     # Get all of the Lyrics from the dataset
     dataset = MetallicaLyricsDataset(data_dir)
-    all_lyrics = dataset.get_all()
+    # and add end of lyrics token
+    all_lyrics = dataset.get_all() + ';'
 
     # This is the essentially the decoder
-    all_chars = sorted(list(set(c for c in all_lyrics)))
-    # Add an End of Song token
-    all_chars += ';'
+    all_chars = sorted(list(set(c for c in all_lyrics).union(pretrain_tokens)))
 
     # This will be the encoder
     token_map = {c:ii for ii,c in enumerate(all_chars)}
 
     return token_map, all_chars
 
+
+def clean_willy(all_text):
+    subs = {'&c': 'etc', '&C': 'etc', '$': 'l'}
+
+    for rem, rep in subs.items():
+        all_text = all_text.replace(rem, rep)
+
+    return all_text
+
+def get_shakes_tokens(data_file='shakespeare_input.txt'):
+    with open(data_file, 'r') as fp:
+        all_text = fp.read()
+
+    all_text = clean_willy(all_text)
+
+    char_set = set(c for c in all_text)
+
+    return char_set
+
+
 class AttentionHead(nn.Module):
 
-    def __init__(self, n_embed_in, n_embed_out, max_tokens=2048):
+    def __init__(self, n_embed_in, n_embed_out, max_tokens=2048, dropout=0.2):
         super().__init__()
         self.n_embed = n_embed_in
 
         self.query_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
         self.key_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
         self.value_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
+
+        self.dropout = nn.Dropout(dropout)
 
         self.register_buffer('no_look_ahead', torch.triu(torch.full((max_tokens, max_tokens), float('-inf')), diagonal=1))
 
@@ -152,14 +173,17 @@ class AttentionHead(nn.Module):
 
         dk = math.sqrt(Q.shape[-1])
 
-        attention = torch.softmax((Q @ K)/dk + NLA, dim=2) @ V
+        attention = torch.softmax((Q @ K)/dk + NLA, dim=2)
+        attention = self.dropout(attention)
 
-        return attention
+        output = attention @ V
+
+        return output
 
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, n_embed, n_heads=8, n_inner=512):
+    def __init__(self, n_embed, n_heads=8, n_inner=512, dropout=0.2):
         super().__init__()
         self.n_heads = n_heads
         self.n_embed = n_embed
@@ -167,13 +191,14 @@ class MultiHeadAttention(nn.Module):
         dim_per_head = n_embed // n_heads
 
         self.heads = nn.ModuleList(
-            [AttentionHead(n_embed, dim_per_head) for _ in range(n_heads)]
+            [AttentionHead(n_embed, dim_per_head, dropout=dropout) for _ in range(n_heads)]
         )
 
         self.fc_layer = nn.Sequential(
             nn.Linear(n_embed, n_inner),
             nn.ReLU(),
             nn.Linear(n_inner, n_embed),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
@@ -193,15 +218,18 @@ class TransCORmer(nn.Module):
 
     # TODO: Add dropout
 
-    def __init__(self, n_tokens, n_embed, n_blocks=12, n_positions=2048):
+    def __init__(self, n_tokens, n_embed, n_blocks=12, n_positions=2048,
+                 dropout=0.2):
         super().__init__()
         # Create position and word embeddings
         self.token_embed = nn.Embedding(n_tokens, n_embed)
         self.pos_embed = nn.Embedding(n_positions, n_embed)
 
         self.attention_blocks = nn.Sequential(
-            *[MultiHeadAttention(n_embed) for _ in range(n_blocks)]
+            *[MultiHeadAttention(n_embed, dropout=dropout) for _ in range(n_blocks)]
         )
+
+        self.dropout = nn.Dropout(dropout)
 
         self.lm_head = nn.Linear(n_embed, n_tokens)
 
@@ -209,18 +237,43 @@ class TransCORmer(nn.Module):
 
         e = self.token_embed(x) + self.pos_embed(x)
         y = self.attention_blocks(e)
+
+        y = self.dropout(y)
+
         y = self.lm_head(y)
         # I think the loss function will do this.
         # y = torch.softmax(y, dim=2)
 
         return y
 
-def train(model, dataset, train_params, n_epochs=20, device='cpu'):
+@torch.no_grad()
+def evaluate(model, dataset, loss_obj, device='cpu'):
+    model.eval()
+    losses = []
+    for song_tokens in dataset:
+        song_tokens = song_tokens.to(device)
+
+        output = model(song_tokens)
+        labels = song_tokens[:, 1:]
+
+        # Don't use the last output since there is no label
+        aligned_output = output[:, :-1, :]
+        # Transpose last channel and seq dimension to work with loss
+        aligned_output = aligned_output.transpose(-2, -1)
+
+        loss = loss_obj(aligned_output, labels)
+        losses.append(loss.item())
+
+    model.train()
+
+    return np.mean(losses)
+
+def train(model, dataset, train_params, device='cpu', val_dataset=None):
 
     optimizer = AdamW(
         model.parameters(),
-        lr = 2e-4,
-        weight_decay=1e-5,
+        lr = 2e-4,  # 2e-4
+        weight_decay=3e-5,  # 1e-5
     )
 
     model.to(device)
@@ -228,6 +281,7 @@ def train(model, dataset, train_params, n_epochs=20, device='cpu'):
     loss_obj = nn.CrossEntropyLoss()
 
     epoch_losses = []
+    n_epochs = train_params.get('n_epochs', 10)
 
     for e_idx in range(n_epochs):
         losses = []
@@ -251,10 +305,44 @@ def train(model, dataset, train_params, n_epochs=20, device='cpu'):
 
         avg_loss = np.mean(losses)
         epoch_losses.append(avg_loss)
+        print_str = f'Epoch #{e_idx+1} done! Avg Train Loss: {avg_loss:0.4f}'
 
-        print(f'Epoch #{e_idx+1} done! Avg Loss: {avg_loss:0.4f}')
+        if val_dataset is not None:
+            val_loss = evaluate(model, val_dataset, loss_obj, device=device)
+            print_str += f' Val loss: {val_loss:0.4f}'
+
+        print(print_str)
 
 
+@torch.no_grad()
+def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
+                    temp=1.0, top_k=25):
+
+    model.eval()
+
+    lyrics = f'## "{title.upper()}"\n'
+    print(lyrics, end="")
+    char = ""
+
+    tokens = tokenizer.encode(lyrics)
+    tokens = torch.tensor(tokens).unsqueeze_(0)
+    tokens = tokens.to(device)
+
+    while char != ';' and tokens.shape[1] < max_tokens:
+        output = model(tokens)
+        logits = output[:, -1, :] / temp
+        if top_k is not None:
+            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, [-1]]] = -float('Inf')
+
+        probs = torch.softmax(logits, dim=-1)
+        token_idx = torch.multinomial(probs, num_samples=1)
+        tokens = torch.hstack((tokens, token_idx))
+        char = tokenizer.decode([token_idx.detach().item()])
+        lyrics += char
+        print(char, end="", flush=True)
+
+    return lyrics
 
 
 def main():
@@ -272,7 +360,8 @@ def main():
 
     cli_args = parser.parse_args()
     if cli_args.make_char_tokenizer:
-        token_map, all_chars = create_char_tokenizer()
+        willy_tokens = get_shakes_tokens()
+        token_map, all_chars = create_char_tokenizer(pretrain_tokens=willy_tokens)
         joblib.dump([token_map, all_chars], CHAR_TOKENIZER_FILE)
     if cli_args.split:
         train_dir = os.path.join(cli_args.split, "train")
@@ -299,7 +388,8 @@ def main():
     n_tokens = len(tokenizer)
     n_embed = 128
 
-    model = TransCORmer(n_tokens, n_embed=n_embed, n_positions=n_positions)
+    model = TransCORmer(n_tokens, n_embed=n_embed, n_positions=n_positions,
+                        n_blocks=6, dropout=0.3)
 
     # I should probably split in to train and test sets...
     train_dataset = MetallicaLyricsDataset(train_dir, tokenizer)
@@ -308,8 +398,17 @@ def main():
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
     if cli_args.train:
-        train_params = {}
-        train(model, train_dataset, train_params, device=device)
+        train_params = {'n_epochs': 12}
+        train(model, train_dataset, train_params, device=device, val_dataset=test_dataset)
+
+        torch.save(model, 'dropout_model_12blocks.pth')
+
+    # model = torch.load('dropout_model.pth')
+
+    lyrics = generate_lyrics(
+        model, title="the forgotten legend", tokenizer=tokenizer, device=device,
+        temp=1.0
+    )
 
 
 if __name__ == '__main__':
