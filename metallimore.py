@@ -78,7 +78,7 @@ class MetallicaLyricsDataset(Dataset):
     }
 
     def __init__(self, data_dir, tokenizer=None):
-        file_list = glob.glob(os.path.join(data_dir, '*.txt'))
+        file_list = glob.glob(os.path.join(os.path.expanduser(data_dir), '*.txt'))
 
         self.all_text = []
         self.all_tokens = []
@@ -110,6 +110,36 @@ class MetallicaLyricsDataset(Dataset):
         return len(self.all_tokens)
 
 
+class WillyShakesDataset(Dataset):
+
+    def __init__(self, tokens, window_size, deterministic=0):
+        self.window_size = window_size
+        self.tokens = torch.tensor(tokens).unsqueeze_(0)
+        self.n_tokens = len(tokens)
+
+        self.end_idx = self.n_tokens - self.window_size
+
+        self.n_windows = (len(tokens) // window_size) + 1
+
+        self.deterministic = int(deterministic) * 888
+
+    def __getitem__(self, idx):
+        if idx >= len(self):
+            raise IndexError("Index beyond dataset size!")
+
+        if self.deterministic:
+            random.seed(self.deterministic + idx * 1010101)
+
+        start_idx = random.randint(0, self.end_idx)
+
+        return self.tokens[:, start_idx:start_idx+self.window_size]
+
+    def __len__(self):
+        # return self.n_windows
+        return 512
+
+
+
 def create_char_tokenizer(data_dir='Metallica_Lyrics', pretrain_tokens={}):
     # Get all of the Lyrics from the dataset
     dataset = MetallicaLyricsDataset(data_dir)
@@ -126,6 +156,7 @@ def create_char_tokenizer(data_dir='Metallica_Lyrics', pretrain_tokens={}):
 
 
 def clean_willy(all_text):
+    # Remove rare chars and a typo
     subs = {'&c': 'etc', '&C': 'etc', '$': 'l'}
 
     for rem, rep in subs.items():
@@ -183,7 +214,8 @@ class AttentionHead(nn.Module):
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, n_embed, n_heads=8, n_inner=512, dropout=0.2):
+    # def __init__(self, n_embed, n_heads=8, n_inner=512, dropout=0.2):
+    def __init__(self, n_embed, n_heads=6, n_inner=256, dropout=0.2):
         super().__init__()
         self.n_heads = n_heads
         self.n_embed = n_embed
@@ -218,7 +250,7 @@ class TransCORmer(nn.Module):
 
     # TODO: Add dropout
 
-    def __init__(self, n_tokens, n_embed, n_blocks=12, n_positions=2048,
+    def __init__(self, n_tokens, n_embed, n_blocks=4, n_positions=2048,
                  dropout=0.2):
         super().__init__()
         # Create position and word embeddings
@@ -272,8 +304,8 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None):
 
     optimizer = AdamW(
         model.parameters(),
-        lr = 2e-4,  # 2e-4
-        weight_decay=3e-5,  # 1e-5
+        lr = 3e-4,  # 2e-4
+        weight_decay=1e-5,  # 1e-5
     )
 
     model.to(device)
@@ -356,12 +388,20 @@ def main():
     parser.add_argument('--make_char_tokenizer', action='store_true')
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--split', type=str,
-                        help="Split into 80/20 train/test and copy to this directory")
+                        help="Split lyrics into 80/20 train/test and copy to this directory")
+    parser.add_argument('--pretrain', type=str,
+                        help="Use this file to pretrain the model. If ends with .pth, will load it")
+    parser.add_argument('--save', type=str, default='metallimore',
+                        help='location to store the model. ".pth" will be added to end')
 
     cli_args = parser.parse_args()
     if cli_args.make_char_tokenizer:
+        print('Making the tokenizer!')
         willy_tokens = get_shakes_tokens()
-        token_map, all_chars = create_char_tokenizer(pretrain_tokens=willy_tokens)
+        token_map, all_chars = create_char_tokenizer(
+            '~\Dropbox\data\Metallica_Lyrics',
+            pretrain_tokens=willy_tokens
+        )
         joblib.dump([token_map, all_chars], CHAR_TOKENIZER_FILE)
     if cli_args.split:
         train_dir = os.path.join(cli_args.split, "train")
@@ -386,28 +426,61 @@ def main():
     tokenizer = CharTokenizer(CHAR_TOKENIZER_FILE)
     n_positions = 2048
     n_tokens = len(tokenizer)
-    n_embed = 128
+    # n_embed = 128
+    n_embed = 384
 
-    model = TransCORmer(n_tokens, n_embed=n_embed, n_positions=n_positions,
-                        n_blocks=6, dropout=0.3)
+    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+
+    model = TransCORmer(
+        n_tokens, n_embed=n_embed, n_positions=n_positions,
+        # n_blocks=1, dropout=0.0,
+        n_blocks=2, dropout=0.2
+    )
+
+    if cli_args.pretrain:
+        if cli_args.pretrain.endswith('.pth'):
+            print("Loading pretrained model")
+            model = torch.load(cli_args.pretrain)
+        else:
+            print("Running pre-training!")
+            with open(cli_args.pretrain, 'r') as fp:
+                text = clean_willy(fp.read())
+                tokens = tokenizer.encode(text)
+            split_idx = int(len(tokens) * 0.9)
+
+            train_dataset = WillyShakesDataset(
+                tokens[:split_idx], window_size=n_positions
+            )
+            test_dataset = WillyShakesDataset(
+                tokens[split_idx:], window_size=n_positions,
+                deterministic=888
+            )
+            train_params = {'n_epochs': 10}
+            train(
+                model, train_dataset, train_params,
+                device=device, val_dataset=test_dataset
+            )
+            file_name = f'{cli_args.save}.pretrained.pth'
+            torch.save(model, file_name)
+
 
     # I should probably split in to train and test sets...
     train_dataset = MetallicaLyricsDataset(train_dir, tokenizer)
     test_dataset = MetallicaLyricsDataset(test_dir, tokenizer)
 
-    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-
+    file_name = f'{cli_args.save}.pth'
     if cli_args.train:
+        print('Training Metallimore!')
         train_params = {'n_epochs': 12}
         train(model, train_dataset, train_params, device=device, val_dataset=test_dataset)
 
-        torch.save(model, 'dropout_model_12blocks.pth')
-
-    # model = torch.load('dropout_model.pth')
+        torch.save(model, file_name)
+    else:
+        model = torch.load(file_name)
 
     lyrics = generate_lyrics(
         model, title="the forgotten legend", tokenizer=tokenizer, device=device,
-        temp=1.0
+        temp=0.8
     )
 
 
