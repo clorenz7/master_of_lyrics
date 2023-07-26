@@ -226,9 +226,12 @@ class MultiHeadAttention(nn.Module):
             [AttentionHead(n_embed, dim_per_head, dropout=dropout) for _ in range(n_heads)]
         )
 
+        self.out_proj = nn.Linear(n_embed, n_embed, bias=False)
+
         self.fc_layer = nn.Sequential(
             nn.Linear(n_embed, n_inner),
-            nn.ReLU(),
+            # nn.ReLU(),
+            nn.GELU(),
             nn.Linear(n_inner, n_embed),
             nn.Dropout(dropout),
         )
@@ -239,16 +242,16 @@ class MultiHeadAttention(nn.Module):
         attentions = [head(x) for head in self.heads]
 
         y = torch.concat(attentions, dim=2)
-        y = self.fc_layer(y)
+        # Just added this residual connection and out projection
+        x = x + self.out_proj(y)
         # Add residual
-        y = y + x
+        x = x + self.fc_layer(x)
 
-        return y
+        return x
 
 
 class TransCORmer(nn.Module):
 
-    # TODO: Add dropout
 
     def __init__(self, n_tokens, n_embed, n_blocks=4, n_positions=2048,
                  dropout=0.2):
@@ -434,7 +437,7 @@ def main():
     model = TransCORmer(
         n_tokens, n_embed=n_embed, n_positions=n_positions,
         # n_blocks=1, dropout=0.0,
-        n_blocks=2, dropout=0.2
+        n_blocks=3, dropout=0.05
     )
 
     if cli_args.pretrain:
