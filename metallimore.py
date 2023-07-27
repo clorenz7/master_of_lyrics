@@ -10,10 +10,13 @@ import joblib
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 
+from model import TransCORmer
+
 CHAR_TOKENIZER_FILE = 'char_tokenizer.joblib'
+SHAKES_TOKENIZER_FILE = 'shakes_char_tokenizer.joblib'
 
 
 # TODO: Use tiktoken to train a SimpleBytePairEncoding on the data corpus
@@ -140,12 +143,15 @@ class WillyShakesDataset(Dataset):
         return self.size
 
 
-
 def create_char_tokenizer(data_dir='Metallica_Lyrics', pretrain_tokens={}):
-    # Get all of the Lyrics from the dataset
-    dataset = MetallicaLyricsDataset(data_dir)
-    # and add end of lyrics token
-    all_lyrics = dataset.get_all() + ';'
+
+    if data_dir is None:
+        all_lyrics = 'a'
+    else:
+        # Get all of the Lyrics from the dataset
+        dataset = MetallicaLyricsDataset(data_dir)
+        # and add end of lyrics token
+        all_lyrics = dataset.get_all() + ';'
 
     # This is the essentially the decoder
     all_chars = sorted(list(set(c for c in all_lyrics).union(pretrain_tokens)))
@@ -165,123 +171,17 @@ def clean_willy(all_text):
 
     return all_text
 
-def get_shakes_tokens(data_file='shakespeare_input.txt'):
-    with open(data_file, 'r') as fp:
+def get_shakes_tokens(data_file='shakespeare_input.txt', do_clean=True):
+    with open(data_file, 'r', encoding='utf-8') as fp:
         all_text = fp.read()
 
-    all_text = clean_willy(all_text)
+    if do_clean:
+        all_text = clean_willy(all_text)
 
     char_set = set(c for c in all_text)
 
     return char_set
 
-
-class AttentionHead(nn.Module):
-
-    def __init__(self, n_embed_in, n_embed_out, max_tokens=2048, dropout=0.2):
-        super().__init__()
-        self.n_embed = n_embed_in
-
-        self.query_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
-        self.key_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
-        self.value_xform = nn.Linear(n_embed_in, n_embed_out, bias=False)
-
-        self.dropout = nn.Dropout(dropout)
-
-        self.register_buffer('no_look_ahead', torch.triu(torch.full((max_tokens, max_tokens), float('-inf')), diagonal=1))
-
-    def forward(self, x):
-        """
-        expected shape:
-            batch x tokens x embed
-        """
-        Q = self.query_xform(x)
-        K = self.key_xform(x).transpose(-2, -1)
-        V = self.value_xform(x)
-
-        n_tokens = x.shape[1]
-
-        NLA = self.no_look_ahead[:n_tokens, :n_tokens]
-
-        dk = math.sqrt(Q.shape[-1])
-
-        attention = torch.softmax((Q @ K)/dk + NLA, dim=2)
-        attention = self.dropout(attention)
-
-        output = attention @ V
-
-        return output
-
-
-class MultiHeadAttention(nn.Module):
-
-    # def __init__(self, n_embed, n_heads=8, n_inner=512, dropout=0.2):
-    def __init__(self, n_embed, n_heads=6, n_inner=256, dropout=0.2):
-        super().__init__()
-        self.n_heads = n_heads
-        self.n_embed = n_embed
-
-        dim_per_head = n_embed // n_heads
-
-        self.heads = nn.ModuleList(
-            [AttentionHead(n_embed, dim_per_head, dropout=dropout) for _ in range(n_heads)]
-        )
-
-        self.out_proj = nn.Linear(n_embed, n_embed, bias=False)
-
-        self.fc_layer = nn.Sequential(
-            nn.Linear(n_embed, n_inner),
-            # nn.ReLU(),
-            nn.GELU(),
-            nn.Linear(n_inner, n_embed),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, x):
-        ## Implement and Add Layer Normalization
-
-        attentions = [head(x) for head in self.heads]
-
-        y = torch.concat(attentions, dim=2)
-        # Just added this residual connection and out projection
-        x = x + self.out_proj(y)
-        # Add residual
-        x = x + self.fc_layer(x)
-
-        return x
-
-
-class TransCORmer(nn.Module):
-
-
-    def __init__(self, n_tokens, n_embed, n_blocks=4, n_positions=2048,
-                 n_heads=4, dropout=0.2):
-        super().__init__()
-        # Create position and word embeddings
-        self.token_embed = nn.Embedding(n_tokens, n_embed)
-        self.pos_embed = nn.Embedding(n_positions, n_embed)
-
-        self.attention_blocks = nn.Sequential(
-            *[MultiHeadAttention(n_embed, n_heads=n_heads, dropout=dropout) for _ in range(n_blocks)]
-        )
-
-        self.dropout = nn.Dropout(dropout)
-
-        self.lm_head = nn.Linear(n_embed, n_tokens)
-
-    def forward(self, x):
-        pos = torch.arange(0, x.shape[1], device=x.device)
-        e = self.token_embed(x) + self.pos_embed(pos)
-
-        y = self.attention_blocks(e)
-
-        y = self.dropout(y)
-
-        y = self.lm_head(y)
-        # I think the loss function will do this.
-        # y = torch.softmax(y, dim=2)
-
-        return y
 
 @torch.no_grad()
 def evaluate(model, dataset, loss_obj, device='cpu'):
@@ -305,7 +205,7 @@ def evaluate(model, dataset, loss_obj, device='cpu'):
 
     return np.mean(losses)
 
-def train(model, dataset, train_params, device='cpu', val_dataset=None):
+def train(model, dataset, train_params, device='cpu', val_dataset=None, batch_size=16):
 
     optimizer = AdamW(
         model.parameters(),
@@ -314,18 +214,22 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None):
         # weight_decay=1e-5,  # 1e-5
     )
 
+    # print the number of parameters in the model
+    print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
+
     torch.manual_seed(1337)
 
     model.to(device)
 
     loss_obj = nn.CrossEntropyLoss()
+    batch_loss = 0.0
 
     epoch_losses = []
     n_epochs = train_params.get('n_epochs', 10)
 
     for e_idx in range(n_epochs):
         losses = []
-        for song_tokens in dataset:
+        for d_idx, song_tokens in enumerate(dataset, 1):
             song_tokens = song_tokens.to(device)
             optimizer.zero_grad()
             output = model(song_tokens)
@@ -339,8 +243,15 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None):
             loss = loss_obj(aligned_output, labels)
             losses.append(loss.item())
 
-            loss.backward()
-            optimizer.step()
+            batch_loss = loss + batch_loss
+
+            # Doing an accumulation rather than fancy way.
+            # Just to make sure I got architecture correct, then will make fancy
+            if (d_idx % batch_size) == 0:
+                batch_loss = batch_loss / batch_size
+                batch_loss.backward()
+                optimizer.step()
+                batch_loss = 0.0
 
         avg_loss = np.mean(losses)
         epoch_losses.append(avg_loss)
@@ -401,15 +312,27 @@ def main():
     parser.add_argument('--save', type=str, default='metallimore',
                         help='location to store the model. ".pth" will be added to end')
 
+    do_metallica = False
+
     cli_args = parser.parse_args()
     if cli_args.make_char_tokenizer:
         print('Making the tokenizer!')
-        willy_tokens = get_shakes_tokens()
-        token_map, all_chars = create_char_tokenizer(
-            '~\Dropbox\data\Metallica_Lyrics',
-            pretrain_tokens=willy_tokens
-        )
-        joblib.dump([token_map, all_chars], CHAR_TOKENIZER_FILE)
+        if do_metallica:
+            willy_tokens = get_shakes_tokens()
+            token_map, all_chars = create_char_tokenizer(
+                '~\Dropbox\data\Metallica_Lyrics',
+                pretrain_tokens=willy_tokens
+            )
+            joblib.dump([token_map, all_chars], CHAR_TOKENIZER_FILE)
+        else:
+            willy_tokens = get_shakes_tokens(do_clean=False)
+            token_map, all_chars = create_char_tokenizer(
+                None,
+                pretrain_tokens=willy_tokens
+            )
+            print("".join(all_chars))
+            print('# of tokens:', len(token_map))
+            joblib.dump([token_map, all_chars], SHAKES_TOKENIZER_FILE)
     if cli_args.split:
         train_dir = os.path.join(cli_args.split, "train")
         test_dir = os.path.join(cli_args.split, "test")
@@ -430,7 +353,10 @@ def main():
         train_dir = os.path.join(cli_args.data_dir, "train")
         test_dir = os.path.join(cli_args.data_dir, "test")
 
-    tokenizer = CharTokenizer(CHAR_TOKENIZER_FILE)
+    if do_metallica:
+        tokenizer = CharTokenizer(CHAR_TOKENIZER_FILE)
+    else:
+        tokenizer = CharTokenizer(SHAKES_TOKENIZER_FILE)
     n_tokens = len(tokenizer)
     # n_positions = 2048
     # # n_embed = 128
@@ -446,14 +372,15 @@ def main():
     n_embed = 64
     n_heads = 4
     n_layers = 4
+    batch_size=16
 
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
+
     model = TransCORmer(
         n_tokens, n_embed=n_embed, n_positions=n_positions,
-        # n_blocks=1, dropout=0.0,
-        n_blocks=n_layers, dropout=0.05, n_heads=n_heads
+        n_blocks=n_layers, dropout=0.0, n_heads=n_heads
     )
 
     if cli_args.pretrain:
@@ -468,16 +395,17 @@ def main():
             split_idx = int(len(tokens) * 0.9)
 
             train_dataset = WillyShakesDataset(
-                tokens[:split_idx], window_size=n_positions, size=100
+                tokens[:split_idx], window_size=n_positions, size=100*batch_size
             )
             test_dataset = WillyShakesDataset(
                 tokens[split_idx:], window_size=n_positions,
-                deterministic=888, size=200
+                deterministic=888, size=200*batch_size
             )
             train_params = {'n_epochs': 50}
             train(
                 model, train_dataset, train_params,
-                device=device, val_dataset=test_dataset
+                device=device, val_dataset=test_dataset,
+                batch_size=batch_size
             )
             file_name = f'{cli_args.save}.pretrained.pth'
             torch.save(model, file_name)
