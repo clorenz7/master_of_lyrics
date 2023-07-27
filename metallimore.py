@@ -128,13 +128,15 @@ class WillyShakesDataset(Dataset):
         self.size = size
 
     def __getitem__(self, idx):
-        if idx >= len(self):
-            raise IndexError("Index beyond dataset size!")
+        # if idx >= len(self):
+        #     raise IndexError("Index beyond dataset size!")
 
-        if self.deterministic:
-            random.seed(self.deterministic + idx * 1010101)
+        # if self.deterministic:
+        #     random.seed(self.deterministic + idx * 1010101)
 
-        start_idx = random.randint(0, self.end_idx)
+        # start_idx = random.randint(0, self.end_idx)
+        start_idx = torch.randint(0, self.end_idx, (1,))
+        start_idx = start_idx.item()
 
         return self.tokens[:, start_idx:start_idx+self.window_size]
 
@@ -184,10 +186,12 @@ def get_shakes_tokens(data_file='shakespeare_input.txt', do_clean=True):
 
 
 @torch.no_grad()
-def evaluate(model, dataset, loss_obj, device='cpu'):
+def evaluate(model, dataset, loss_obj, n_samples, device='cpu'):
     model.eval()
     losses = []
-    for song_tokens in dataset:
+    # for song_tokens in dataset:
+    for idx in range(n_samples):
+        song_tokens = dataset[idx]
         song_tokens = song_tokens.to(device)
 
         output = model(song_tokens)
@@ -217,8 +221,6 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None, batch_si
     # print the number of parameters in the model
     print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
 
-    torch.manual_seed(1337)
-
     model.to(device)
 
     loss_obj = nn.CrossEntropyLoss()
@@ -227,11 +229,27 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None, batch_si
     epoch_losses = []
     n_epochs = train_params.get('n_epochs', 10)
 
+    n_eval_samples = 200*batch_size
+
+    tr_loss = evaluate(model, dataset, loss_obj, n_samples=n_eval_samples, device=device)
+    val_loss = evaluate(model, val_dataset, loss_obj, n_samples=n_eval_samples, device=device)
+    print_str = f'Epoch #{0} done! Avg Train Loss: {tr_loss:0.4f}'
+    print_str += f' Val loss: {val_loss:0.4f}'
+    print(print_str)
+
+    batch_queue = []
+
+    optimizer.zero_grad(set_to_none=True)
     for e_idx in range(n_epochs):
         losses = []
-        for d_idx, song_tokens in enumerate(dataset, 1):
+        # for d_idx, song_tokens in enumerate(dataset, 1):
+        for d_idx in range(1, len(dataset)+1):
+            if len(batch_queue) == 0:
+                batch_queue = [dataset[i] for i in range(batch_size)]
+                batch_queue = batch_queue[::-1]
+            song_tokens = batch_queue.pop()
             song_tokens = song_tokens.to(device)
-            optimizer.zero_grad()
+            # optimizer.zero_grad()
             output = model(song_tokens)
             labels = song_tokens[:, 1:]
 
@@ -252,13 +270,15 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None, batch_si
                 batch_loss.backward()
                 optimizer.step()
                 batch_loss = 0.0
+                optimizer.zero_grad(set_to_none=True)
 
         avg_loss = np.mean(losses)
         epoch_losses.append(avg_loss)
-        print_str = f'Epoch #{e_idx+1} done! Avg Train Loss: {avg_loss:0.4f}'
+        tr_loss = evaluate(model, dataset, loss_obj, n_samples=n_eval_samples, device=device)
+        print_str = f'Epoch #{e_idx+1} done! Avg Train Loss: {tr_loss:0.4f}'
 
         if val_dataset is not None:
-            val_loss = evaluate(model, val_dataset, loss_obj, device=device)
+            val_loss = evaluate(model, val_dataset, loss_obj, n_samples=n_eval_samples, device=device)
             print_str += f' Val loss: {val_loss:0.4f}'
 
         print(print_str)
@@ -313,6 +333,8 @@ def main():
                         help='location to store the model. ".pth" will be added to end')
 
     do_metallica = False
+
+    torch.manual_seed(1337)
 
     cli_args = parser.parse_args()
     if cli_args.make_char_tokenizer:
@@ -390,7 +412,9 @@ def main():
         else:
             print("Running pre-training!")
             with open(cli_args.pretrain, 'r') as fp:
-                text = clean_willy(fp.read())
+                text = fp.read()
+                if do_metallica:
+                    text = clean_willy(text)
                 tokens = tokenizer.encode(text)
             split_idx = int(len(tokens) * 0.9)
 
@@ -409,8 +433,6 @@ def main():
             )
             file_name = f'{cli_args.save}.pretrained.pth'
             torch.save(model, file_name)
-
-        import ipdb; ipdb.set_trace()
 
     # I should probably split in to train and test sets...
     train_dataset = MetallicaLyricsDataset(train_dir, tokenizer)
