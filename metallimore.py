@@ -112,7 +112,7 @@ class MetallicaLyricsDataset(Dataset):
 
 class WillyShakesDataset(Dataset):
 
-    def __init__(self, tokens, window_size, deterministic=0):
+    def __init__(self, tokens, window_size, deterministic=0, size=512):
         self.window_size = window_size
         self.tokens = torch.tensor(tokens).unsqueeze_(0)
         self.n_tokens = len(tokens)
@@ -122,6 +122,7 @@ class WillyShakesDataset(Dataset):
         self.n_windows = (len(tokens) // window_size) + 1
 
         self.deterministic = int(deterministic) * 888
+        self.size = size
 
     def __getitem__(self, idx):
         if idx >= len(self):
@@ -136,7 +137,7 @@ class WillyShakesDataset(Dataset):
 
     def __len__(self):
         # return self.n_windows
-        return 512
+        return self.size
 
 
 
@@ -254,14 +255,14 @@ class TransCORmer(nn.Module):
 
 
     def __init__(self, n_tokens, n_embed, n_blocks=4, n_positions=2048,
-                 dropout=0.2):
+                 n_heads=4, dropout=0.2):
         super().__init__()
         # Create position and word embeddings
         self.token_embed = nn.Embedding(n_tokens, n_embed)
         self.pos_embed = nn.Embedding(n_positions, n_embed)
 
         self.attention_blocks = nn.Sequential(
-            *[MultiHeadAttention(n_embed, dropout=dropout) for _ in range(n_blocks)]
+            *[MultiHeadAttention(n_embed, n_heads=n_heads, dropout=dropout) for _ in range(n_blocks)]
         )
 
         self.dropout = nn.Dropout(dropout)
@@ -269,8 +270,9 @@ class TransCORmer(nn.Module):
         self.lm_head = nn.Linear(n_embed, n_tokens)
 
     def forward(self, x):
+        pos = torch.arange(0, x.shape[1], device=x.device)
+        e = self.token_embed(x) + self.pos_embed(pos)
 
-        e = self.token_embed(x) + self.pos_embed(x)
         y = self.attention_blocks(e)
 
         y = self.dropout(y)
@@ -307,9 +309,12 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None):
 
     optimizer = AdamW(
         model.parameters(),
-        lr = 3e-4,  # 2e-4
-        weight_decay=1e-5,  # 1e-5
+        # lr = 3e-4,  # 2e-4
+        lr = 1e-3,
+        # weight_decay=1e-5,  # 1e-5
     )
+
+    torch.manual_seed(1337)
 
     model.to(device)
 
@@ -323,7 +328,6 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None):
         for song_tokens in dataset:
             song_tokens = song_tokens.to(device)
             optimizer.zero_grad()
-
             output = model(song_tokens)
             labels = song_tokens[:, 1:]
 
@@ -427,17 +431,29 @@ def main():
         test_dir = os.path.join(cli_args.data_dir, "test")
 
     tokenizer = CharTokenizer(CHAR_TOKENIZER_FILE)
-    n_positions = 2048
     n_tokens = len(tokenizer)
-    # n_embed = 128
-    n_embed = 384
+    # n_positions = 2048
+    # # n_embed = 128
+    # n_embed = 384
+    # n_heads = 8
+
+    # Andrej's settings:
+    # Eval every 100
+    # iters = 5000
+    # learn rate = 1e-3
+    # eval_iters = 200
+    n_positions = 32
+    n_embed = 64
+    n_heads = 4
+    n_layers = 4
+
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
     model = TransCORmer(
         n_tokens, n_embed=n_embed, n_positions=n_positions,
         # n_blocks=1, dropout=0.0,
-        n_blocks=3, dropout=0.05
+        n_blocks=n_layers, dropout=0.05, n_heads=n_heads
     )
 
     if cli_args.pretrain:
@@ -452,13 +468,13 @@ def main():
             split_idx = int(len(tokens) * 0.9)
 
             train_dataset = WillyShakesDataset(
-                tokens[:split_idx], window_size=n_positions
+                tokens[:split_idx], window_size=n_positions, size=100
             )
             test_dataset = WillyShakesDataset(
                 tokens[split_idx:], window_size=n_positions,
-                deterministic=888
+                deterministic=888, size=200
             )
-            train_params = {'n_epochs': 10}
+            train_params = {'n_epochs': 50}
             train(
                 model, train_dataset, train_params,
                 device=device, val_dataset=test_dataset
@@ -466,6 +482,7 @@ def main():
             file_name = f'{cli_args.save}.pretrained.pth'
             torch.save(model, file_name)
 
+        import ipdb; ipdb.set_trace()
 
     # I should probably split in to train and test sets...
     train_dataset = MetallicaLyricsDataset(train_dir, tokenizer)
