@@ -4,6 +4,7 @@ import math
 import torch
 from torch import nn
 
+
 class AttentionHead(nn.Module):
 
     def __init__(self, n_embed_in, n_embed_out, max_tokens=2048, dropout=0.2):
@@ -16,7 +17,10 @@ class AttentionHead(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-        self.register_buffer('no_look_ahead', torch.triu(torch.full((max_tokens, max_tokens), float('-inf')), diagonal=1))
+        self.register_buffer(
+            'no_look_ahead',
+            torch.triu(torch.full((max_tokens, max_tokens), float('-inf')), diagonal=1)
+        )
         # Andrej's way:
         # self.register_buffer('tril', torch.tril(torch.ones(max_tokens, max_tokens)))
 
@@ -72,6 +76,7 @@ class MultiHeadAttention(nn.Module):
 
         return y
 
+
 class FeedForward(nn.Module):
 
     def __init__(self, n_embed, n_inner=None, dropout=0.0):
@@ -107,6 +112,7 @@ class CorBlock(nn.Module):
         x = x + self.ffw(self.ln_2(x))
 
         return x
+
 
 class TransCORmer(nn.Module):
 

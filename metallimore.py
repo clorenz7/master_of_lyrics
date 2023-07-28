@@ -256,7 +256,7 @@ def main():
     batch_size = 16
     dropout = 0.0
 
-    dropout = 0.1
+    dropout = 0.25
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
@@ -268,7 +268,8 @@ def main():
     if cli_args.pretrain:
         if cli_args.pretrain.endswith('.pth'):
             print("Loading pretrained model")
-            model = torch.load(cli_args.pretrain)
+            prev_state = torch.load(cli_args.pretrain).state_dict()
+            model.load_state_dict(prev_state)
         else:
             print("Running pre-training!")
             with open(cli_args.pretrain, 'r') as fp:
@@ -308,7 +309,7 @@ def main():
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
-        train_params = {'n_epochs': 10, 'lr': 1e-4}
+        train_params = {'n_epochs': 4, 'lr': 1e-4}
         train(
             model, train_dataset, train_params,
             device=device, val_dataset=test_dataset,
@@ -321,7 +322,7 @@ def main():
 
     lyrics = generate_lyrics(
         model, title="the forgotten legend", tokenizer=tokenizer,
-        device=device, temp=0.4, window_size=n_positions,
+        device=device, temp=1.0, window_size=n_positions,
     )
 
 
