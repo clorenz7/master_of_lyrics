@@ -66,8 +66,6 @@ class MultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(n_embed, n_embed)
 
     def forward(self, x):
-        ## Implement and Add Layer Normalization
-        # x = self.ln_1(x)
         attentions = [head(x) for head in self.heads]
         y = torch.concat(attentions, dim=2)
         y = self.out_proj(y)
