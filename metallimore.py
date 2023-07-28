@@ -55,7 +55,7 @@ def clean_lyrics(all_lyrics):
     all_lyrics = all_lyrics.replace('(', '')
     all_lyrics = all_lyrics.replace(')', '')
 
-    return all_lyrics
+    return all_lyrics.strip()
 
 
 class CharTokenizer(object):
@@ -80,7 +80,8 @@ class MetallicaLyricsDataset(Dataset):
         'char_tokenizer': CharTokenizer
     }
 
-    def __init__(self, data_dir, tokenizer=None):
+    def __init__(self, data_dir, tokenizer=None, window_size=0,
+                 cat_mode=True, size=None):
         file_list = glob.glob(os.path.join(os.path.expanduser(data_dir), '*.txt'))
 
         self.all_text = []
@@ -88,29 +89,61 @@ class MetallicaLyricsDataset(Dataset):
 
         self.tokenizer = tokenizer
 
+        self.window_size = window_size
+
+        self.cat_mode = cat_mode
+
         for file_name in file_list:
             with open(file_name, 'r') as fp:
                 song_text = clean_lyrics(fp.read())
                 self.all_text.append(song_text)
 
-            if tokenizer is not None:
-                self.all_tokens.append(
-                    tokenizer.encode(song_text + tokenizer.eos_token)
-                )
+            if not self.cat_mode:
+                if tokenizer is not None:
+                    self.all_tokens.append(
+                        tokenizer.encode(song_text + tokenizer.eos_token)
+                    )
+        if self.cat_mode:
+            eos_token = '' if tokenizer is None else tokenizer.eos_token
+            all_songs = self.get_all(sep=eos_token+'\n')
+            all_songs += eos_token
+            self.all_tokens = tokenizer.encode(all_songs)
+            self.end_idx = len(self.all_tokens)
+            self.size = size or 1600
+        else:
+            self.size = len(self.all_tokens)
 
-    def get_all(self):
+
+    def get_all(self, sep="\n"):
         """
         Returns the lyrics from all songs in one big string.
         Useful for creating the tokenizer.
         """
-        return "\n".join(self.all_text)
+        return sep.join(self.all_text)
 
     def __getitem__(self, idx):
-        item = torch.tensor(self.all_tokens[idx]).unsqueeze_(0)
-        return item
+
+        if self.cat_mode:
+            start_idx = torch.randint(0, self.end_idx, (1,))
+
+            item = torch.tensor(
+                self.all_tokens[start_idx:start_idx+self.window_size]
+            )
+        else:
+            item = torch.tensor(self.all_tokens[idx])
+
+            if self.window_size:
+                n_tokens = item.shape[0]
+                start_idx = torch.randint(-self.window_size, n_tokens, (1,))
+                start_idx = min(start_idx, start_idx - n_tokens)
+                start_idx = max(start_idx, 0)
+
+                item = item[start_idx:start_idx+self.window_size]
+
+        return item.unsqueeze_(0)
 
     def __len__(self):
-        return len(self.all_tokens)
+        return self.size
 
 
 class WillyShakesDataset(Dataset):
@@ -151,7 +184,7 @@ def create_char_tokenizer(data_dir='Metallica_Lyrics', pretrain_tokens={}):
         all_lyrics = 'a'
     else:
         # Get all of the Lyrics from the dataset
-        dataset = MetallicaLyricsDataset(data_dir)
+        dataset = MetallicaLyricsDataset(data_dir, cat_mode=False)
         # and add end of lyrics token
         all_lyrics = dataset.get_all() + ';'
 
@@ -215,6 +248,7 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None, batch_si
         model.parameters(),
         # lr = 3e-4,  # 2e-4
         lr = 1e-3,
+        # lr = 3e-4,
         # weight_decay=1e-5,  # 1e-5
     )
 
@@ -249,6 +283,7 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None, batch_si
                 batch_queue = batch_queue[::-1]
             song_tokens = batch_queue.pop()
             song_tokens = song_tokens.to(device)
+
             # optimizer.zero_grad()
             output = model(song_tokens)
             labels = song_tokens[:, 1:]
@@ -286,7 +321,7 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None, batch_si
 
 @torch.no_grad()
 def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
-                    temp=1.0, top_k=25):
+                    temp=1.0, top_k=25, window_size=32):
 
     model.eval()
 
@@ -298,7 +333,10 @@ def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
     tokens = torch.tensor(tokens).unsqueeze_(0)
     tokens = tokens.to(device)
 
-    while char != ';' and tokens.shape[1] < max_tokens:
+    while char != ';' and len(lyrics) < max_tokens:
+        if tokens.shape[1] > window_size:
+            tokens = tokens[:, :window_size]
+
         output = model(tokens)
         logits = output[:, -1, :] / temp
         if top_k is not None:
@@ -332,7 +370,7 @@ def main():
     parser.add_argument('--save', type=str, default='metallimore',
                         help='location to store the model. ".pth" will be added to end')
 
-    do_metallica = False
+    do_metallica = True
 
     torch.manual_seed(1337)
 
@@ -379,6 +417,7 @@ def main():
         tokenizer = CharTokenizer(CHAR_TOKENIZER_FILE)
     else:
         tokenizer = CharTokenizer(SHAKES_TOKENIZER_FILE)
+
     n_tokens = len(tokenizer)
     # n_positions = 2048
     # # n_embed = 128
@@ -390,19 +429,21 @@ def main():
     # iters = 5000
     # learn rate = 1e-3
     # eval_iters = 200
+    # For replication:
     n_positions = 32
     n_embed = 64
     n_heads = 4
     n_layers = 4
-    batch_size=16
+    batch_size = 16
+    dropout = 0.0
 
+    dropout = 0.1
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
-
     model = TransCORmer(
         n_tokens, n_embed=n_embed, n_positions=n_positions,
-        n_blocks=n_layers, dropout=0.0, n_heads=n_heads
+        n_blocks=n_layers, dropout=dropout, n_heads=n_heads
     )
 
     if cli_args.pretrain:
@@ -435,14 +476,24 @@ def main():
             torch.save(model, file_name)
 
     # I should probably split in to train and test sets...
-    train_dataset = MetallicaLyricsDataset(train_dir, tokenizer)
-    test_dataset = MetallicaLyricsDataset(test_dir, tokenizer)
+    train_dataset = MetallicaLyricsDataset(
+        train_dir, tokenizer, cat_mode=True, window_size=n_positions,
+        size=100*batch_size
+    )
+    test_dataset = MetallicaLyricsDataset(
+        test_dir, tokenizer, cat_mode=True, window_size=n_positions,
+        size=200*batch_size
+    )
 
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
-        train_params = {'n_epochs': 12}
-        train(model, train_dataset, train_params, device=device, val_dataset=test_dataset)
+        train_params = {'n_epochs': 20}
+        train(
+            model, train_dataset, train_params,
+            device=device, val_dataset=test_dataset,
+            batch_size=batch_size
+        )
 
         torch.save(model, file_name)
     else:
@@ -450,7 +501,7 @@ def main():
 
     lyrics = generate_lyrics(
         model, title="the forgotten legend", tokenizer=tokenizer, device=device,
-        temp=0.8
+        temp=0.4, window_size=n_positions,
     )
 
 
