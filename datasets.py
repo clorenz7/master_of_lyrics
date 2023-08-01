@@ -139,7 +139,8 @@ class WillyShakesDataset(Dataset):
 
     def __init__(self, tokens, window_size, deterministic=0, size=512):
         self.window_size = window_size
-        self.tokens = torch.Tensor(tokens).unsqueeze_(0)
+        self.tokens = torch.tensor(tokens)
+
         self.n_tokens = len(tokens)
 
         self.end_idx = self.n_tokens - self.window_size
@@ -160,7 +161,7 @@ class WillyShakesDataset(Dataset):
         start_idx = torch.randint(0, self.end_idx, (1,))
         start_idx = start_idx.item()
 
-        return self.tokens[:, start_idx:start_idx+self.window_size]
+        return self.tokens[start_idx:start_idx+self.window_size]
 
     def __len__(self):
         # return self.n_windows

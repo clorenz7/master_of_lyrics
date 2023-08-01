@@ -21,14 +21,12 @@ SHAKES_TOKENIZER_FILE = 'shakes_char_tokenizer.joblib'
 # TODO: Use tiktoken to train a SimpleBytePairEncoding on the data corpus
 
 
-
 @torch.no_grad()
-def evaluate(model, dataset, loss_obj, n_samples, device='cpu'):
+def evaluate(model, data_loader, loss_obj, device='cpu'):
     model.eval()
     losses = []
     # for song_tokens in dataset:
-    for idx in range(n_samples):
-        song_tokens = dataset[idx]
+    for song_tokens in data_loader:
         song_tokens = song_tokens.to(device)
 
         output = model(song_tokens)
@@ -58,45 +56,39 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
         # weight_decay=1e-5,  # 1e-5
     )
 
+    train_loader = DataLoader(
+        dataset, batch_size=batch_size, num_workers=1
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, num_workers=1
+    )
+
     # print the number of parameters in the model
     print(sum(p.numel() for p in model.parameters())/1e6, 'M parameters')
 
     model.to(device)
 
     loss_obj = nn.CrossEntropyLoss()
-    batch_loss = 0.0
 
     epoch_losses = []
     n_epochs = train_params.get('n_epochs', 10)
 
-    n_eval_samples = 200*batch_size
-
     tr_loss = evaluate(
-        model, dataset, loss_obj,
-        n_samples=n_eval_samples, device=device
+        model, train_loader, loss_obj, device=device
     )
     val_loss = evaluate(
-        model, val_dataset, loss_obj,
-        n_samples=n_eval_samples, device=device
+        model, val_loader, loss_obj, device=device
     )
     print_str = f'Epoch #{0} done! Avg Train Loss: {tr_loss:0.4f}'
     print_str += f' Val loss: {val_loss:0.4f}'
     print(print_str)
 
-    batch_queue = []
-
-    optimizer.zero_grad(set_to_none=True)
     for e_idx in range(n_epochs):
         losses = []
-        # for d_idx, song_tokens in enumerate(dataset, 1):
-        for d_idx in range(1, len(dataset)+1):
-            if len(batch_queue) == 0:
-                batch_queue = [dataset[i] for i in range(batch_size)]
-                batch_queue = batch_queue[::-1]
-            song_tokens = batch_queue.pop()
+        for b_idx, song_tokens in enumerate(train_loader, 1):
+            optimizer.zero_grad(set_to_none=True)
             song_tokens = song_tokens.to(device)
 
-            # optimizer.zero_grad()
             output = model(song_tokens)
             labels = song_tokens[:, 1:]
 
@@ -108,24 +100,16 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
             loss = loss_obj(aligned_output, labels)
             losses.append(loss.item())
 
-            batch_loss = loss + batch_loss
-
-            # Doing an accumulation rather than fancy way.
-            # Just to make sure I got architecture correct, then will make fancy
-            if (d_idx % batch_size) == 0:
-                batch_loss = batch_loss / batch_size
-                batch_loss.backward()
-                optimizer.step()
-                batch_loss = 0.0
-                optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
 
         avg_loss = np.mean(losses)
         epoch_losses.append(avg_loss)
-        tr_loss = evaluate(model, dataset, loss_obj, n_samples=n_eval_samples, device=device)
+        tr_loss = evaluate(model, train_loader, loss_obj, device=device)
         print_str = f'Epoch #{e_idx+1} done! Avg Train Loss: {tr_loss:0.4f}'
 
         if val_dataset is not None:
-            val_loss = evaluate(model, val_dataset, loss_obj, n_samples=n_eval_samples, device=device)
+            val_loss = evaluate(model, val_loader, loss_obj, device=device)
             print_str += f' Val loss: {val_loss:0.4f}'
 
         print(print_str)
@@ -256,7 +240,7 @@ def main():
     batch_size = 16
     dropout = 0.0
 
-    dropout = 0.25
+    # dropout = 0.25
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
@@ -299,7 +283,7 @@ def main():
     # I should probably split in to train and test sets...
     train_dataset = datasets.MetallicaLyricsDataset(
         train_dir, tokenizer, cat_mode=False, window_size=n_positions,
-        size=100*batch_size
+        size=200*batch_size
     )
     test_dataset = datasets.MetallicaLyricsDataset(
         test_dir, tokenizer, cat_mode=False, window_size=n_positions,
