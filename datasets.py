@@ -53,7 +53,8 @@ def clean_lyrics(all_lyrics):
     all_lyrics = all_lyrics.replace('é', 'e')
     all_lyrics = all_lyrics.replace('Æ', 'Ae')
     all_lyrics = all_lyrics.replace('\n ', '\n')
-    all_lyrics = all_lyrics.replace('\n\n', '\n')
+    # You should actually get rid of this:
+    # all_lyrics = all_lyrics.replace('\n\n', '\n')
     all_lyrics = all_lyrics.replace('  ', ' ')
     all_lyrics = all_lyrics.replace('(', '')
     all_lyrics = all_lyrics.replace(')', '')

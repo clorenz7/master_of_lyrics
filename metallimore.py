@@ -194,6 +194,10 @@ def main():
         '--save', type=str, default='metallimore',
         help='location to store the model. ".pth" will be added to end'
     )
+    parser.add_argument(
+        '-d', '--dropout', type=float, default=0.0,
+        help='Amount of dropout to apply'
+    )
 
     torch.manual_seed(1337)
 
@@ -268,6 +272,7 @@ def main():
     # lr = 1e-3
     # n_epochs = 50
 
+    dropout = cli_args.dropout
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
@@ -327,7 +332,7 @@ def main():
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
-        train_params = {'n_epochs': n_epochs//2, 'lr': lr/20.0}
+        train_params = {'n_epochs': n_epochs//2, 'lr': lr/25.0}
         try:
             train(
                 model, train_dataset, train_params,
@@ -341,16 +346,21 @@ def main():
     else:
         model = torch.load(file_name)
 
-    lyrics = generate_lyrics(
-        model, title="the forgotten legends", tokenizer=tokenizer,
-        device=device, temp=0.8, window_size=n_positions, shakes_mode=True,
-        max_tokens=1000
-    )
-    # lyrics = generate_lyrics(
-    #     model, title="battery", tokenizer=tokenizer,
-    #     device=device, temp=1.0, window_size=n_positions, shakes_mode=True,
-    #     max_tokens=1000
-    # )
+    titles = [
+        "the forgotten legends",
+        "Coroner",
+        "nothing else unforgiven",
+        "enter sadman",
+        "two",
+    ]
+
+    for title in titles:
+        lyrics = generate_lyrics(
+            model, title=title, tokenizer=tokenizer,
+            device=device, temp=0.8, window_size=n_positions, shakes_mode=True,
+            max_tokens=1000
+        )
+        print("\n")
 
 
 if __name__ == '__main__':
