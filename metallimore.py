@@ -332,7 +332,7 @@ def main():
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
-        train_params = {'n_epochs': n_epochs//2, 'lr': lr/25.0}
+        train_params = {'n_epochs': 8, 'lr': 1e-5}
         try:
             train(
                 model, train_dataset, train_params,
@@ -350,8 +350,16 @@ def main():
         "the forgotten legends",
         "Coroner",
         "nothing else unforgiven",
+        "master of lyrics",
         "enter sadman",
         "two",
+        "transformer",
+        "unforgiven x",
+        "too fast too furious",
+        "wrecking ball",
+        "firework",
+        "bad blood",
+        "poker face",
     ]
 
     for title in titles:
