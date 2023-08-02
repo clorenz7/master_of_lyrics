@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
+from torch.nn import functional as F
 
 from model import TransCORmer
 import datasets
@@ -57,10 +58,12 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
     )
 
     train_loader = DataLoader(
-        dataset, batch_size=batch_size, num_workers=1
+        dataset, batch_size=batch_size, num_workers=0,
+        generator=torch.Generator(),  # For 1-1 reproduction
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, num_workers=1
+        val_dataset, batch_size=batch_size, num_workers=0,
+        generator=torch.Generator(),
     )
 
     # print the number of parameters in the model
@@ -82,6 +85,8 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
     print_str = f'Epoch #{0} done! Avg Train Loss: {tr_loss:0.4f}'
     print_str += f' Val loss: {val_loss:0.4f}'
     print(print_str)
+
+    # print(torch.get_rng_state())
 
     for e_idx in range(n_epochs):
         losses = []
@@ -117,32 +122,45 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
 
 @torch.no_grad()
 def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
-                    temp=1.0, top_k=25, window_size=32, shakes_mode=False):
+                    temp=1.0, top_k=None, window_size=32, shakes_mode=False,
+                    eos_token=None):
 
     model.eval()
 
-    if shakes_mode:
-        lyrics = f'{title.upper()}:\n'
+    # context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    # idx = generate(model, context, max_tokens)
+
+    # import ipdb; ipdb.set_trace()
+
+    if title is None:
+        title = tokenizer.decode([0])
+        lyrics = title
     else:
-        lyrics = f'## "{title.upper()}"\n'
+        if shakes_mode:
+            lyrics = f'{title.upper()}:\n'
+        else:
+            lyrics = f'## "{title.upper()}"\n'
+
     print(lyrics, end="")
     char = ""
+
+    eos_token = eos_token or tokenizer.eos_token
 
     tokens = tokenizer.encode(lyrics)
     tokens = torch.tensor(tokens).unsqueeze_(0)
     tokens = tokens.to(device)
 
-    while char != ';' and len(lyrics) < max_tokens:
-        if tokens.shape[1] > window_size:
-            tokens = tokens[:, -window_size:]
+    while char != eos_token and len(lyrics) < max_tokens:
+        # if tokens.shape[1] > window_size:
+        #     tokens = tokens[:, -window_size:]
 
-        output = model(tokens)
+        output = model(tokens[:, -(window_size-1):])
         logits = output[:, -1, :] / temp
         if top_k is not None:
             v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
             logits[logits < v[:, [-1]]] = -float('Inf')
 
-        probs = torch.softmax(logits, dim=-1)
+        probs = F.softmax(logits, dim=-1)
         token_idx = torch.multinomial(probs, num_samples=1)
         tokens = torch.hstack((tokens, token_idx))
         char = tokenizer.decode([token_idx.detach().item()])
@@ -228,7 +246,9 @@ def main():
     # n_positions = 2048
     # # n_embed = 128
     # n_embed = 384
-    # n_heads = 8
+    # n_layers = 6
+    # n_heads = 6
+    # dropout = 0.2
 
     # Andrej's settings:
     # Eval every 100
@@ -243,7 +263,7 @@ def main():
     batch_size = 16
     dropout = 0.0
 
-    # dropout = 0.25
+    dropout = 0.25
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
@@ -257,6 +277,7 @@ def main():
             print("Loading pretrained model")
             prev_state = torch.load(cli_args.pretrain).state_dict()
             model.load_state_dict(prev_state)
+            model.to(device)
 
         else:
             print("Running pre-training!")
@@ -284,9 +305,9 @@ def main():
             file_name = f'{cli_args.save}.pretrained.pth'
             torch.save(model, file_name)
 
-            lyrics = generate_lyrics(model, "CORY", tokenizer, shakes_mode=True)
+            print("Example Shakespeare:")
+            lyrics = generate_lyrics(model, None, tokenizer, device=device, shakes_mode=True)
 
-    # I should probably split in to train and test sets...
     train_dataset = datasets.MetallicaLyricsDataset(
         train_dir, tokenizer, cat_mode=False, window_size=n_positions,
         size=100*batch_size
@@ -299,7 +320,7 @@ def main():
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
-        train_params = {'n_epochs': 50, 'lr': 2e-4}
+        train_params = {'n_epochs': 25, 'lr': 1e-4}
         try:
             train(
                 model, train_dataset, train_params,
