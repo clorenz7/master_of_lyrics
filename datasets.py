@@ -34,7 +34,7 @@ def get_title(text):
 
 def clean_lyrics(all_lyrics):
     """
-    Replace rare and weird characters.
+    Replace rare and weird characters found in Metallica lyrics files.
     Should get down to 70 character vocabulary.
     """
     all_lyrics = remove_bracketed_text(all_lyrics)
@@ -53,8 +53,6 @@ def clean_lyrics(all_lyrics):
     all_lyrics = all_lyrics.replace('é', 'e')
     all_lyrics = all_lyrics.replace('Æ', 'Ae')
     all_lyrics = all_lyrics.replace('\n ', '\n')
-    # You should actually get rid of this:
-    # all_lyrics = all_lyrics.replace('\n\n', '\n')
     all_lyrics = all_lyrics.replace('  ', ' ')
     all_lyrics = all_lyrics.replace('(', '')
     all_lyrics = all_lyrics.replace(')', '')
@@ -63,12 +61,16 @@ def clean_lyrics(all_lyrics):
 
 
 class CharTokenizer(object):
+    """
+    Simple character level tokenizer class ala Hugging Face
+    """
 
     def __init__(self, token_map_file, eos_token=';', pad_token=' '):
         self.encode_map, self.decode_list = joblib.load(token_map_file)
         self.eos_token = eos_token
         self.pad_token = pad_token
         self.pad_token_id = self.encode_map[pad_token]
+        self.eos_token_id = self.encode_map[eos_token]
 
     def encode(self, text):
         return [self.encode_map[c] for c in text]
@@ -81,6 +83,9 @@ class CharTokenizer(object):
 
 
 class MetallicaLyricsDataset(Dataset):
+    """
+    Dataset class for a folder of Metallica lyrics
+    """
 
     _tokenizer_class_map = {
         'char_tokenizer': CharTokenizer
@@ -88,6 +93,20 @@ class MetallicaLyricsDataset(Dataset):
 
     def __init__(self, data_dir, tokenizer=None, window_size=0,
                  cat_mode=True, size=None, reformat_title=True):
+        """
+        Args:
+            data_dir:
+                Directory with all of the songs in separate .txt files
+            tokenizer:
+            window_size:
+                How many characters to grab at a time
+            cat_mode:
+                If True, lyrics from all songs will be concatentated together
+            size:
+                How many windows to take from the data
+            reformat_title:
+                Converts first line from '## "TITLE"' to 'TITLE:'
+        """
         file_list = glob.glob(
             os.path.join(os.path.expanduser(data_dir), '*.txt')
         )
@@ -101,6 +120,7 @@ class MetallicaLyricsDataset(Dataset):
 
         self.cat_mode = cat_mode
 
+        # Read files from the directory
         for file_name in file_list:
             with open(file_name, 'r') as fp:
                 song_text = clean_lyrics(fp.read())
@@ -169,6 +189,9 @@ class MetallicaLyricsDataset(Dataset):
 
 
 class WillyShakesDataset(Dataset):
+    """
+    Dataset class for Karpathy's concatenated shakespeare file
+    """
 
     def __init__(self, tokens, window_size, deterministic=0, size=512):
         self.window_size = window_size
@@ -184,20 +207,16 @@ class WillyShakesDataset(Dataset):
         self.size = size
 
     def __getitem__(self, idx):
-        # if idx >= len(self):
-        #     raise IndexError("Index beyond dataset size!")
 
         # if self.deterministic:
         #     random.seed(self.deterministic + idx * 1010101)
 
-        # start_idx = random.randint(0, self.end_idx)
         start_idx = torch.randint(0, self.end_idx, (1,))
         start_idx = start_idx.item()
 
         return self.tokens[start_idx:start_idx+self.window_size]
 
     def __len__(self):
-        # return self.n_windows
         return self.size
 
 
@@ -221,7 +240,9 @@ def create_char_tokenizer(data_dir='Metallica_Lyrics', pretrain_tokens={}):
 
 
 def clean_willy(all_text):
-    # Remove rare chars and a typo
+    """
+    Removes rare chars and a typo from the concatenated shakespere file
+    """
     subs = {'&c': 'etc', '&C': 'etc', '$': 'l'}
 
     for rem, rep in subs.items():
@@ -231,6 +252,13 @@ def clean_willy(all_text):
 
 
 def get_shakes_tokens(data_file='shakespeare_input.txt', do_clean=True):
+    """
+    Obtains all of the characters in the shakespere file
+    Args:
+        do_clean:
+            If True, the file will be corrected before processing.
+            False is useful for replicating Andrej's results
+    """
     with open(data_file, 'r', encoding='utf-8') as fp:
         all_text = fp.read()
 

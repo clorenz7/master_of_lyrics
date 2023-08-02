@@ -89,6 +89,7 @@ class FeedForward(nn.Module):
             nn.Linear(n_inner, n_embed),
             nn.Dropout(dropout),
         )
+
     def forward(self, x):
         return self.net(x)
 
@@ -99,16 +100,14 @@ class CorBlock(nn.Module):
         self.n_heads = n_heads
         self.n_embed = n_embed
 
-        self.mha = MultiHeadAttention(n_embed, n_heads, dropout=dropout)
         self.ln_1 = nn.LayerNorm(n_embed)
-        self.ln_2 = nn.LayerNorm(n_embed)
+        self.mha = MultiHeadAttention(n_embed, n_heads, dropout=dropout)
 
+        self.ln_2 = nn.LayerNorm(n_embed)
         self.ffw = FeedForward(n_embed, dropout=dropout)
 
     def forward(self, x):
-        # Just added this residual connection and out projection
         x = x + self.mha(self.ln_1(x))
-        # Add residual
         x = x + self.ffw(self.ln_2(x))
 
         return x
@@ -141,7 +140,5 @@ class TransCORmer(nn.Module):
         y = self.ln(y)
 
         y = self.lm_head(y)
-        # I think the loss function will do this.
-        # y = torch.softmax(y, dim=2)
 
         return y

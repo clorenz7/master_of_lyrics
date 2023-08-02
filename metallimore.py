@@ -51,10 +51,7 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
 
     optimizer = AdamW(
         model.parameters(),
-        # lr = 3e-4,  # 2e-4
         lr=train_params.get('lr', 1e-3),
-        # lr = 3e-4,
-        # weight_decay=1e-5,  # 1e-5
     )
 
     train_loader = DataLoader(
@@ -86,8 +83,6 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
     print_str += f' Val loss: {val_loss:0.4f}'
     print(print_str)
 
-    # print(torch.get_rng_state())
-
     for e_idx in range(n_epochs):
         losses = []
         for b_idx, song_tokens in enumerate(train_loader, 1):
@@ -97,7 +92,8 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
             output = model(song_tokens)
             labels = song_tokens[:, 1:]
 
-            # Don't use the last output since there is no label
+            # Don't use the last output since there is no implicit label
+            # TODO: Pass the label for each token through the data loader
             aligned_output = output[:, :-1, :]
             # Transpose last channel and seq dimension to work with loss
             aligned_output = aligned_output.transpose(-2, -1)
@@ -127,11 +123,6 @@ def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
 
     model.eval()
 
-    # context = torch.zeros((1, 1), dtype=torch.long, device=device)
-    # idx = generate(model, context, max_tokens)
-
-    # import ipdb; ipdb.set_trace()
-
     if title is None:
         title = tokenizer.decode([0])
         lyrics = title
@@ -151,9 +142,6 @@ def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
     tokens = tokens.to(device)
 
     while char != eos_token and len(lyrics) < max_tokens:
-        # if tokens.shape[1] > window_size:
-        #     tokens = tokens[:, -window_size:]
-
         output = model(tokens[:, -(window_size-1):])
         logits = output[:, -1, :] / temp
         if top_k is not None:
@@ -257,7 +245,7 @@ def main():
     lr = 3e-4
     n_epochs = 30
 
-    # Andrej's settings:
+    # Andrej's initial settings:
     # Eval every 100
     # iters = 5000
     # learn rate = 1e-3
@@ -368,7 +356,7 @@ def main():
             device=device, temp=0.8, window_size=n_positions, shakes_mode=True,
             max_tokens=1000
         )
-        print("\n")
+        print("\n-------------------------------------\n")
 
 
 if __name__ == '__main__':
