@@ -117,11 +117,14 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
 
 @torch.no_grad()
 def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
-                    temp=1.0, top_k=25, window_size=32):
+                    temp=1.0, top_k=25, window_size=32, shakes_mode=False):
 
     model.eval()
 
-    lyrics = f'## "{title.upper()}"\n'
+    if shakes_mode:
+        lyrics = f'{title.upper()}:\n'
+    else:
+        lyrics = f'## "{title.upper()}"\n'
     print(lyrics, end="")
     char = ""
 
@@ -131,7 +134,7 @@ def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
 
     while char != ';' and len(lyrics) < max_tokens:
         if tokens.shape[1] > window_size:
-            tokens = tokens[:, :window_size]
+            tokens = tokens[:, -window_size:]
 
         output = model(tokens)
         logits = output[:, -1, :] / temp
@@ -254,6 +257,7 @@ def main():
             print("Loading pretrained model")
             prev_state = torch.load(cli_args.pretrain).state_dict()
             model.load_state_dict(prev_state)
+
         else:
             print("Running pre-training!")
             with open(cli_args.pretrain, 'r') as fp:
@@ -280,10 +284,12 @@ def main():
             file_name = f'{cli_args.save}.pretrained.pth'
             torch.save(model, file_name)
 
+            lyrics = generate_lyrics(model, "CORY", tokenizer, shakes_mode=True)
+
     # I should probably split in to train and test sets...
     train_dataset = datasets.MetallicaLyricsDataset(
         train_dir, tokenizer, cat_mode=False, window_size=n_positions,
-        size=200*batch_size
+        size=100*batch_size
     )
     test_dataset = datasets.MetallicaLyricsDataset(
         test_dir, tokenizer, cat_mode=False, window_size=n_positions,
@@ -293,12 +299,15 @@ def main():
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
-        train_params = {'n_epochs': 4, 'lr': 1e-4}
-        train(
-            model, train_dataset, train_params,
-            device=device, val_dataset=test_dataset,
-            batch_size=batch_size
-        )
+        train_params = {'n_epochs': 50, 'lr': 2e-4}
+        try:
+            train(
+                model, train_dataset, train_params,
+                device=device, val_dataset=test_dataset,
+                batch_size=batch_size
+            )
+        except KeyboardInterrupt:
+            pass
 
         torch.save(model, file_name)
     else:
@@ -306,8 +315,12 @@ def main():
 
     lyrics = generate_lyrics(
         model, title="the forgotten legend", tokenizer=tokenizer,
-        device=device, temp=1.0, window_size=n_positions,
+        device=device, temp=0.8, window_size=n_positions,
     )
+    # lyrics = generate_lyrics(
+    #     model, title="battery", tokenizer=tokenizer,
+    #     device=device, temp=0.7, window_size=n_positions,
+    # )
 
 
 if __name__ == '__main__':

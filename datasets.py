@@ -16,6 +16,22 @@ def remove_bracketed_text(text):
     return cleaned_text
 
 
+def get_title(text):
+    """
+    Obtains TITLE from string format '## "{TITLE}"'
+    """
+    pattern = r'## "(.+)"'
+
+    match = re.search(pattern, text)
+
+    if match:
+        title = match.group(1)
+    else:
+        raise ValueError("No title found!")
+
+    return title
+
+
 def clean_lyrics(all_lyrics):
     """
     Replace rare and weird characters.
@@ -68,7 +84,7 @@ class MetallicaLyricsDataset(Dataset):
     }
 
     def __init__(self, data_dir, tokenizer=None, window_size=0,
-                 cat_mode=True, size=None):
+                 cat_mode=True, size=None, reformat_title=True):
         file_list = glob.glob(
             os.path.join(os.path.expanduser(data_dir), '*.txt')
         )
@@ -85,6 +101,10 @@ class MetallicaLyricsDataset(Dataset):
         for file_name in file_list:
             with open(file_name, 'r') as fp:
                 song_text = clean_lyrics(fp.read())
+                if reformat_title:
+                    title, song_text = song_text.split('\n', 1)
+                    title = get_title(title)
+                    song_text = f'{title}:\n' + song_text
                 self.all_text.append(song_text)
 
             if not self.cat_mode:
@@ -97,7 +117,7 @@ class MetallicaLyricsDataset(Dataset):
             all_songs = self.get_all(sep=eos_token+'\n')
             all_songs += eos_token
             self.all_tokens = tokenizer.encode(all_songs)
-            self.end_idx = len(self.all_tokens)
+            self.end_idx = len(self.all_tokens) - self.window_size
             self.size = size or 1600
         else:
             self.size = size or len(self.all_tokens)
@@ -123,13 +143,17 @@ class MetallicaLyricsDataset(Dataset):
 
             if self.window_size:
                 n_tokens = item.shape[0]
-                start_idx = torch.randint(-self.window_size, n_tokens, (1,))
-                start_idx = min(start_idx, start_idx - n_tokens)
+                if n_tokens < self.window_size:
+                    print(f"{song_idx} is bad!")
+
+                start_idx = torch.randint(-5, n_tokens - self.window_size + 5, (1,))
+                start_idx = min(start_idx, n_tokens - self.window_size)
                 start_idx = max(start_idx, 0)
 
                 item = item[start_idx:start_idx+self.window_size]
 
-        return item.unsqueeze_(0)
+        return item
+        # return item.unsqueeze_(0)
 
     def __len__(self):
         return self.size
