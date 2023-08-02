@@ -63,9 +63,11 @@ def clean_lyrics(all_lyrics):
 
 class CharTokenizer(object):
 
-    def __init__(self, token_map_file, eos_token=';'):
+    def __init__(self, token_map_file, eos_token=';', pad_token=' '):
         self.encode_map, self.decode_list = joblib.load(token_map_file)
         self.eos_token = eos_token
+        self.pad_token = pad_token
+        self.pad_token_id = self.encode_map[pad_token]
 
     def encode(self, text):
         return [self.encode_map[c] for c in text]
@@ -144,13 +146,19 @@ class MetallicaLyricsDataset(Dataset):
             if self.window_size:
                 n_tokens = item.shape[0]
                 if n_tokens < self.window_size:
-                    print(f"{song_idx} is bad!")
+                    tokens = item
+                    item = torch.full(
+                        (self.window_size,),
+                        self.tokenizer.pad_token_id,
+                        dtype=torch.long
+                    )
+                    item[:n_tokens] = tokens
+                else:
+                    start_idx = torch.randint(-5, n_tokens - self.window_size + 5, (1,))
+                    start_idx = min(start_idx, n_tokens - self.window_size)
+                    start_idx = max(start_idx, 0)
 
-                start_idx = torch.randint(-5, n_tokens - self.window_size + 5, (1,))
-                start_idx = min(start_idx, n_tokens - self.window_size)
-                start_idx = max(start_idx, 0)
-
-                item = item[start_idx:start_idx+self.window_size]
+                    item = item[start_idx:start_idx+self.window_size]
 
         return item
         # return item.unsqueeze_(0)

@@ -243,27 +243,31 @@ def main():
         tokenizer = datasets.CharTokenizer(CHAR_TOKENIZER_FILE)
 
     n_tokens = len(tokenizer)
-    # n_positions = 2048
-    # # n_embed = 128
-    # n_embed = 384
-    # n_layers = 6
-    # n_heads = 6
-    # dropout = 0.2
+    # Andrej's final
+    n_positions = 256
+    n_embed = 384
+    n_layers = 6
+    n_heads = 6
+    batch_size = 64
+    dropout = 0.2
+    lr = 3e-4
+    n_epochs = 30
 
     # Andrej's settings:
     # Eval every 100
     # iters = 5000
     # learn rate = 1e-3
     # eval_iters = 200
-    # For replication:
-    n_positions = 32
-    n_embed = 64
-    n_heads = 4
-    n_layers = 4
-    batch_size = 16
-    dropout = 0.0
+    # # For replication:
+    # n_positions = 32
+    # n_embed = 64
+    # n_heads = 4
+    # n_layers = 4
+    # batch_size = 16
+    # dropout = 0.0
+    # lr = 1e-3
+    # n_epochs = 50
 
-    dropout = 0.25
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
@@ -296,7 +300,7 @@ def main():
                 tokens[split_idx:], window_size=n_positions,
                 deterministic=888, size=200*batch_size
             )
-            train_params = {'n_epochs': 50}
+            train_params = {'n_epochs': n_epochs, 'lr': lr}
             train(
                 model, train_dataset, train_params,
                 device=device, val_dataset=test_dataset,
@@ -306,7 +310,10 @@ def main():
             torch.save(model, file_name)
 
             print("Example Shakespeare:")
-            lyrics = generate_lyrics(model, None, tokenizer, device=device, shakes_mode=True)
+            lyrics = generate_lyrics(
+                model, None, tokenizer, device=device,
+                shakes_mode=True, eos_token='~'
+            )
 
     train_dataset = datasets.MetallicaLyricsDataset(
         train_dir, tokenizer, cat_mode=False, window_size=n_positions,
@@ -320,7 +327,7 @@ def main():
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
-        train_params = {'n_epochs': 25, 'lr': 1e-4}
+        train_params = {'n_epochs': n_epochs//2, 'lr': lr/20.0}
         try:
             train(
                 model, train_dataset, train_params,
@@ -335,12 +342,14 @@ def main():
         model = torch.load(file_name)
 
     lyrics = generate_lyrics(
-        model, title="the forgotten legend", tokenizer=tokenizer,
-        device=device, temp=0.8, window_size=n_positions,
+        model, title="the forgotten legends", tokenizer=tokenizer,
+        device=device, temp=0.8, window_size=n_positions, shakes_mode=True,
+        max_tokens=1000
     )
     # lyrics = generate_lyrics(
     #     model, title="battery", tokenizer=tokenizer,
-    #     device=device, temp=0.7, window_size=n_positions,
+    #     device=device, temp=1.0, window_size=n_positions, shakes_mode=True,
+    #     max_tokens=1000
     # )
 
 
