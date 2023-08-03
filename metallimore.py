@@ -118,7 +118,7 @@ def train(model, dataset, train_params, device='cpu', val_dataset=None,
 
 @torch.no_grad()
 def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
-                    temp=1.0, top_k=None, window_size=32, shakes_mode=False,
+                    temp=1.0, top_k=None, window_size=32, shakes_mode=True,
                     eos_token=None):
 
     model.eval()
@@ -132,7 +132,7 @@ def generate_lyrics(model, title, tokenizer, max_tokens=2000, device='cpu',
         else:
             lyrics = f'## "{title.upper()}"\n'
 
-    print(lyrics, end="")
+    print(lyrics, end="", flush=True)
     char = ""
 
     eos_token = eos_token or tokenizer.eos_token
@@ -180,11 +180,20 @@ def main():
     )
     parser.add_argument(
         '--save', type=str, default='metallimore',
-        help='location to store the model. ".pth" will be added to end'
+        help='Location where model is stored. ".pth" will be added to end. '
+             'Will be saved in train mode, will be loaded for eval mode.'
     )
     parser.add_argument(
         '-d', '--dropout', type=float, default=0.0,
         help='Amount of dropout to apply'
+    )
+    parser.add_argument(
+        '--lr', type=float, default=1e-5,
+        help='Learning rate to finetune with'
+    )
+    parser.add_argument(
+        '--eval', type=str, default=None,
+        help='comma separated list of song titles to generate from'
     )
 
     torch.manual_seed(1337)
@@ -198,17 +207,22 @@ def main():
                 None,
                 pretrain_tokens=willy_tokens
             )
-            print("".join(all_chars))
-            print('# of tokens:', len(token_map))
             joblib.dump([token_map, all_chars], SHAKES_TOKENIZER_FILE)
         else:
             willy_tokens = datasets.get_shakes_tokens()
+            if cli_args.split:
+                data_dir = cli_args.data_dir
+            else:
+                data_dir = os.path.join(cli_args.data_dir, '**')
             token_map, all_chars = datasets.create_char_tokenizer(
-                '~\Dropbox\data\Metallica_Lyrics',
+                data_dir,
+                # '~\Dropbox\data\Metallica_Lyrics',
+                # os.path.join(cli_args.data_dir, '**'),
                 pretrain_tokens=willy_tokens
             )
             joblib.dump([token_map, all_chars], CHAR_TOKENIZER_FILE)
 
+    # Split the data
     if cli_args.split:
         train_dir = os.path.join(cli_args.split, "train")
         test_dir = os.path.join(cli_args.split, "test")
@@ -320,7 +334,10 @@ def main():
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
-        train_params = {'n_epochs': 8, 'lr': 1e-5}
+        train_params = {
+            'n_epochs': 8,
+            'lr': cli_args.lr
+        }
         try:
             train(
                 model, train_dataset, train_params,
@@ -328,13 +345,16 @@ def main():
                 batch_size=batch_size
             )
         except KeyboardInterrupt:
+            # So that you can break out if model starting to overtrain
             pass
 
         torch.save(model, file_name)
     else:
         model = torch.load(file_name)
 
-    titles = [
+    titles = None if not(cli_args.eval) else cli_args.eval.split(",")
+
+    titles = titles or [
         "the forgotten legends",
         "Coroner",
         "nothing else unforgiven",
