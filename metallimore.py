@@ -188,8 +188,12 @@ def main():
         help='Amount of dropout to apply'
     )
     parser.add_argument(
-        '--lr', type=float, default=1e-5,
+        '--lr', type=float, default=2e-5,
         help='Learning rate to finetune with'
+    )
+    parser.add_argument(
+        '-e', '--n_epochs', type=int, default=20,
+        help='Number of epochs to finetune with'
     )
     parser.add_argument(
         '--eval', type=str, default=None,
@@ -324,18 +328,18 @@ def main():
 
     train_dataset = datasets.MetallicaLyricsDataset(
         train_dir, tokenizer, cat_mode=False, window_size=n_positions,
-        size=100*batch_size
+        size=10*batch_size
     )
     test_dataset = datasets.MetallicaLyricsDataset(
         test_dir, tokenizer, cat_mode=False, window_size=n_positions,
-        size=200*batch_size
+        size=10*batch_size
     )
 
     file_name = f'{cli_args.save}.pth'
     if cli_args.train:
         print('Training Metallimore!')
         train_params = {
-            'n_epochs': 8,
+            'n_epochs': cli_args.n_epochs,
             'lr': cli_args.lr
         }
         try:
@@ -373,7 +377,8 @@ def main():
     for title in titles:
         lyrics = generate_lyrics(
             model, title=title, tokenizer=tokenizer,
-            device=device, temp=0.8, window_size=n_positions, shakes_mode=True,
+            device=device, temp=0.8, top_k=20,
+            window_size=n_positions, shakes_mode=True,
             max_tokens=1000
         )
         print("\n-------------------------------------\n")
